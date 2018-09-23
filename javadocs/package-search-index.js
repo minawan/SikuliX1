@@ -1,0 +1,1 @@
+packageSearchIndex = [{"l":"org.sikuli.basics"},{"l":"org.sikuli.script"}]
