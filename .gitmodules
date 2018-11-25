@@ -1,3 +1,6 @@
 [submodule "scrcpy"]
 	path = scrcpy
 	url = git@github.com:minawan/scrcpy.git
+[submodule "humble-video"]
+	path = humble-video
+	url = git@github.com:minawan/humble-video.git
