@@ -1,0 +1,3 @@
+[submodule "scrcpy"]
+	path = scrcpy
+	url = git@github.com:minawan/scrcpy.git
