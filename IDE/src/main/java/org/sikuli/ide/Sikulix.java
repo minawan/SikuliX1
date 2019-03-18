@@ -10,20 +10,59 @@ import org.sikuli.util.ProcessRunner;
 import javax.swing.*;
 import java.io.File;
 import java.io.FilenameFilter;
+import java.io.BufferedInputStream;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.channels.SocketChannel;
 import java.net.URLDecoder;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.security.CodeSource;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
+import io.humble.video.Codec;
+import io.humble.video.Decoder;
+import io.humble.video.Demuxer;
+import io.humble.video.DemuxerStream;
+import io.humble.video.Global;
+import io.humble.video.Media;
+import io.humble.video.MediaDescriptor;
+import io.humble.video.MediaPacket;
+import io.humble.video.MediaPicture;
+import io.humble.video.Rational;
+import io.humble.video.awt.ImageFrame;
+import io.humble.video.awt.MediaPictureConverter;
+import io.humble.video.awt.MediaPictureConverterFactory;
+import io.humble.video.customio.FfmpegIO;
+import io.humble.video.customio.FfmpegIOHandle;
+import io.humble.video.customio.HumbleIO;
+import io.humble.video.customio.IURLProtocolHandler;
+//import io.humble.video.customio.ReadableWritableChannelHandler;
+import io.humble.video.customio.InputOutputStreamHandler;
+import io.humble.video.customio.URLProtocolManager;
+
+class DeviceInfo {
+    public String deviceName;
+    public int width, height;
+    DeviceInfo(String deviceName, int width, int height) {
+      this.deviceName = deviceName;
+      this.width = width;
+      this.height = height;
+    }
+}
 
 public class Sikulix {
 
-  static boolean verbose = false;
+  static boolean verbose = true;
   static String jarName = "";
   static File sxFolder = null;
   static File fAppData;
@@ -39,8 +78,134 @@ public class Sikulix {
   static boolean moveJRuby = false;
   static boolean jythonLatest = false;
   static boolean jrubyLatest = false;
+  private static String[] commands = {
+    "adb push /home/sushi/SikuliX1/scrcpy/x/server/scrcpy-server.jar /data/local/tmp/scrcpy-server.jar",
+    "adb reverse localabstract:scrcpy tcp:27183",
+    "adb shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 0 8000000 false"
+  };
+
+  private static int parseSize(byte[] buf, int offset) {
+    byte[] value = new byte[4];
+    System.arraycopy(buf, offset, value, 2, 2);
+    return ByteBuffer.wrap(value).getInt();
+  }
+
+  private static final int DEVICE_NAME_FIELD_LENGTH = 64;
+  private static DeviceInfo readDeviceInfo(Socket deviceSocket)
+      throws IOException {
+    String deviceName;
+    int num_bytes_to_read = DEVICE_NAME_FIELD_LENGTH + 4;
+    Integer width, height;
+    byte[] buf = new byte[num_bytes_to_read];
+    BufferedInputStream istream = new BufferedInputStream(
+                                        deviceSocket.getInputStream());
+    int received_bytes = istream.read(buf, 0, num_bytes_to_read);
+    if (received_bytes < num_bytes_to_read) {
+      log(1, "Could not retrieve device information");
+      return null;
+    }
+    buf[DEVICE_NAME_FIELD_LENGTH - 1] = 0;
+    int nameLength;
+    for (nameLength = 0; buf[nameLength] != 0; ++nameLength) {
+      // Find the index of null terminating character.
+    }
+    deviceName = new String(buf, 0, nameLength);
+    width = parseSize(buf, DEVICE_NAME_FIELD_LENGTH);
+    height = parseSize(buf, DEVICE_NAME_FIELD_LENGTH + 2);
+    return new DeviceInfo(deviceName, width, height);
+  }
 
   public static void main(String[] args) {
+    log(1, "Entering main...");
+    log(1, "Getting runtime...");
+    for (String cmd : commands) {
+      try {
+        Runtime runtime = Runtime.getRuntime();
+        log(1, "Running process...");
+        Process process = runtime.exec(cmd);
+        new Thread(new Runnable() {
+          public void run() {
+            BufferedReader input =
+              new BufferedReader(new InputStreamReader(process.getInputStream()));
+            String line = null; 
+
+            try {
+              log(1, "Before while...");
+              while ((line = input.readLine()) != null)
+                log(1, line);
+              log(1, "After while...");
+            } catch (IOException e) {
+              e.printStackTrace();
+            }
+          }
+        }).start();
+        //process.waitFor();
+      } catch (IOException e) {
+        log(1, "IOException");
+        e.printStackTrace();
+      /*} catch (InterruptedException e) {
+        log(1, "InterruptedException");
+        e.printStackTrace();*/
+      }
+    }
+    int portNumber = 27183;
+    log(1, "Port: %d", portNumber);
+    try {
+      ServerSocket serverSocket = new ServerSocket(portNumber);
+      Socket clientSocket = serverSocket.accept();
+      PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true);
+      InputStream stream = clientSocket.getInputStream();
+      BufferedReader in = new BufferedReader(new InputStreamReader(stream));
+      DeviceInfo deviceInfo = readDeviceInfo(clientSocket);
+      log(1, "Device Name: %s", deviceInfo.deviceName);
+      log(1, "Screen Dimensions: %dx%d", deviceInfo.width, deviceInfo.height);
+      HumbleIO mFactory = HumbleIO.getFactory();
+      //if (channel == null) {
+      //  throw new IOException("hey yo client socket channel is null");
+      //}
+      //mFactory.mapIO(protocol, new ReadableWritableChannelHandler(channel, null, true), true);
+      String protocol = "myprotocol";
+      mFactory.mapIO(protocol + ":yeah", new InputOutputStreamHandler(stream, null, true), true);
+      URLProtocolManager.getManager().registerFactory(protocol, mFactory);
+      //SocketChannel channel = clientSocket.getChannel();
+      long retval = 0;
+      // Call url_open wrapper
+      FfmpegIOHandle handle = new FfmpegIOHandle();
+
+      retval = FfmpegIO.url_open(handle, protocol + ":yeah",
+          IURLProtocolHandler.URL_RDONLY_MODE);
+      if (retval < 0) {
+        log(1, "url_open(myprotocol:yeah) failed: %ld", retval);
+        return;
+      }
+      // call url_read wrapper
+      byte[] buffer = new byte[1024];
+      while ((retval = FfmpegIO.url_read(handle, buffer, buffer.length)) > 0)
+      {
+        log(1, String.format("bytesRead == %d", retval));
+      }
+
+      // call url_close wrapper
+      retval = FfmpegIO.url_close(handle);
+      if (retval < 0) {
+        log(1, "url_close failed: %ld", retval);
+        return;
+      }
+      // 1. Initialize muxer.
+      // 1.1 Register either customio.InputOutputStreamHandler or
+      //     customio.ReadableWritableChannelHandler to URLProtocolManager.
+      // 2. Initialize codec.
+      //Codec codec = Codec.findDecodingCodec(Codec.ID.CODEC_ID_H264);
+      // 3.Initialize decoder.
+      //decoder.getCodecType() == MediaDescriptor.Type.MEDIA_VIDEO
+    } catch (IOException e) {
+      log(1, "IOException");
+      e.printStackTrace();
+    } catch (Exception e) {
+      log(1, "Exception");
+      e.printStackTrace();
+    }
+  /*
     CodeSource codeSrc = SikuliIDE.class.getProtectionDomain().getCodeSource();
     if (codeSrc != null && codeSrc.getLocation() != null) {
       try {
@@ -163,16 +328,19 @@ public class Sikulix {
     cmd.addAll(Arrays.asList(args));
     int exitValue = ProcessRunner.detach(cmd);
     log(1, "terminating: returned: %d", exitValue);
+    */
   }
 
   private static void log(int level, String msg, Object... args) {
-    String msgShow = "[DEBUG] RunIDE: " + msg;
+    String timestamp = Calendar.getInstance().getTime().toString();
+    String msgShow = timestamp + " [DEBUG] RunIDE: " + msg;
     if (level < 0) {
-      msgShow = "[ERROR] RunIDE: " + msg;
+      msgShow = timestamp + "[ERROR] RunIDE: " + msg;
     } else if (!verbose) {
       return;
     }
-    System.out.println(String.format(msgShow, args));
+    //System.out.println(String.format(msgShow, args));
+    System.out.println(msgShow);
   }
 
   private static File makeAppData() {
